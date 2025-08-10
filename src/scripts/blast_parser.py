@@ -300,7 +300,6 @@ class BlastParser:
         'bit_score': 'Float64',
         'qseq': 'string',
         'sseq': 'string',
-        'qseqid': 'string',
     }
 
     def __init__(self, file: Path | str, params: dict = None):
