@@ -10,7 +10,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 from st_aggrid import GridOptionsBuilder, AgGrid, DataReturnMode, ColumnsAutoSizeMode
 from streamlit_extras.no_default_selectbox import selectbox as ndf_selectbox
-from streamlit_extras.switch_page_button import switch_page
 
 # Needed to search for scripts in the parent folder when using PyInstaller
 sys.path.append(str(Path(__file__).parent))
@@ -293,7 +292,7 @@ def choose_analysis_to_load() -> BlastParser | None:
         st.warning('Please run a BLAST search first in "Blast Query" page.')
 
         if st.button('Go to "Blast Query" page'):
-            switch_page('Blast Query')
+            st.switch_page('pages/2 Blast Query.py')
 
         st.stop()
 
