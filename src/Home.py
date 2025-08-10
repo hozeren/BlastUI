@@ -9,7 +9,6 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent))
 
 import streamlit as st
-from streamlit_extras.switch_page_button import switch_page
 
 from scripts.blast_downloader import BlastDownloader
 from scripts import utils
@@ -102,7 +101,7 @@ def main():
                  'databases by going to the corresponding page.')
 
         if st.button('Go to "Manage Databases" page', on_click=set_not_check_blast):
-            switch_page('Manage Databases')
+            st.switch_page('pages/1 Manage Databases.py')
 
 
 if __name__ == '__main__':
