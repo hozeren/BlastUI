@@ -14,7 +14,6 @@ from scripts.utils import GenomeData, fragile
 from multiprocessing import cpu_count
 from subprocess import CalledProcessError
 
-from streamlit_extras.switch_page_button import switch_page
 from streamlit_extras.stoggle import stoggle
 from streamlit_extras.no_default_selectbox import selectbox as ndf_selectbox
 from st_keyup import st_keyup
@@ -24,12 +23,16 @@ from st_keyup import st_keyup
 def read_genomes(uploaded_files) -> list[GenomeData]:
     genomes = []
     for uploaded_file in uploaded_files:
-        # To convert to a string based IO
-        genome_io = StringIO(uploaded_file.getvalue().decode("utf-8"))
-        genome_str = genome_io.read()
-        genome = GenomeData(name=uploaded_file.name, genome=genome_str)
-        genomes.append(genome)
-
+        try:
+            # To convert to a string based IO
+            genome_io = StringIO(uploaded_file.getvalue().decode("utf-8"))
+            genome_str = genome_io.read()
+            genome = GenomeData(name=uploaded_file.name, genome=genome_str)
+            genomes.append(genome)
+        except Exception as e:
+            # Don't use st.write/st.error inside cached functions
+            print(f"Error processing file {uploaded_file.name}: {str(e)}")
+            
     return genomes
 
 
@@ -80,7 +83,7 @@ def main():
     if st.session_state['blast_exec'] is None:
         st.error('Could not find BLAST. Please download it in the home section.')
         if st.button('Go to home'):
-            switch_page('Home')
+            st.switch_page('Home.py')
         st.stop()
 
     stoggle('❓ What is a BLAST database? ',
@@ -129,7 +132,7 @@ def main():
                 old_db_path.rename(new_db_path)
 
             st.session_state['database_renamed'] = True
-            st.experimental_rerun()
+            st.rerun()
 
         if 'database_renamed' in st.session_state:
             st.success('Database renamed!')
@@ -162,11 +165,14 @@ def main():
     with create_tab:
         st.write('Upload the genomes you want to use. To clear the list refresh the page.')
 
-        uploaded_files = st.file_uploader("Upload genomes", type=["fasta", "faa", 'fa'], accept_multiple_files=True)
-        if uploaded_files:
-            st.write(f'You have uploaded {len(uploaded_files)} genomes.')
+        uploaded_files = st.file_uploader('Upload one or more FASTA files',
+                                           type=['fasta', 'fa', 'fas', 'faa', 'fna'],
+                                           accept_multiple_files=True,
+                                           help='The files should be in FASTA format.')
 
-        if uploaded_files:
+        files_uploaded = uploaded_files and len(uploaded_files) > 0
+        if files_uploaded:
+            st.write(f'You have uploaded {len(uploaded_files)} genomes.')
 
             ##### OPTIONS #####
             with st.expander('DATABASE OPTIONS', expanded=True):
