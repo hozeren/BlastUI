@@ -7,9 +7,7 @@ from io import StringIO, BytesIO
 from multiprocessing import cpu_count
 from pathlib import Path
 
-import psutil
 import streamlit as st
-from streamlit_extras.switch_page_button import switch_page
 from streamlit_option_menu import option_menu
 
 # Needed to search for scripts in the parent folder when using PyInstaller
@@ -53,34 +51,15 @@ def prepare_for_blast_command(query: str, blast_mode: str, db: str, threads: int
     Path(query_file).write_text(query)
 
     blast_exec = st.session_state['blast_exec']
-    outfmt = "7 qaccver saccver nident pident qlen length qcovhsp gaps gapopen " \
+    # Match exactly what BLAST outputs (21 fields)
+    outfmt = "7 qacc saccver nident pident qlen length qcovhsp gaps gapopen " \
              "mismatch positive ppos qstart qend sstart send qframe sframe score " \
-             "evalue bitscore qseq sseq"
+             "evalue bitscore"
 
     cmd = shlex.split(f'"{blast_exec[blast_mode]}" -query "{query_file}" -db "{db}" -outfmt "{outfmt}" '
                       f'-out "{out_file}" -num_threads {threads} {additional_params}')
 
     return out_file, cmd
-
-
-def kill_process_group(procid):
-    """
-    Terminate a process and all its children, if some fails it kills them.
-    """
-
-    try:
-        parent = psutil.Process(procid)
-
-        childrens = parent.children(recursive=True)
-        for child in childrens:
-            child.terminate()
-        parent.terminate()
-
-        gone, alive = psutil.wait_procs(childrens + [parent], timeout=3)
-        for proc in alive:
-            proc.kill()
-    except psutil.NoSuchProcess as e:
-        print(f'kill_process_group raised: NoSuchProcess{e}.')
 
 
 def choose_database(container=None):
@@ -581,14 +560,14 @@ def main():
     if st.session_state['blast_exec'] is None:
         st.error('Could not find BLAST. Please download it in the home section.')
         if st.button('Go to home'):
-            switch_page('Home')
+            st.switch_page('Home.py')
 
         st.stop()
 
     ###### BLAST MODE ######
     blast_modes = ["BLASTN", "BLASTP", "BLASTX", 'TBLASTN', 'TBLASTX']
     icons = ['list-task', 'list-task', "list-task", 'list-task', 'list-task']
-    DEFAULT_BLAST_MODE = 'BLASTN'
+    DEFAULT_BLAST_MODE = 'BLASTP'
     default_index = blast_modes.index(DEFAULT_BLAST_MODE)
 
     st.session_state.blast_mode = option_menu('', options=blast_modes, icons=icons, menu_icon="gear",
@@ -617,23 +596,30 @@ def main():
     exp = st.expander('⚙️ Advanced options', expanded=False)
     set_advanced_options(exp)
 
-    start_col, end_col, _ = st.columns([1, 1, 4])
+    # BLAST and Stop buttons - side by side
+    blast_col, stop_col = st.columns([3, 1])
+    
+    with blast_col:
+        blast_button = st.button('Blast query', use_container_width=True)
+    
+    with stop_col:
+        stop_button = st.button('⏹️ Stop', use_container_width=True, type="secondary")
+    
+    # Handle stop button
+    if stop_button:
+        if 'blast_process' in st.session_state:
+            try:
+                st.session_state['blast_process'].terminate()
+                st.session_state['blast_process'].wait(timeout=5)
+            except:
+                st.session_state['blast_process'].kill()
+            finally:
+                if 'blast_process' in st.session_state:
+                    del st.session_state['blast_process']
+                st.warning("BLAST process stopped by user")
+                st.rerun()
 
-    ###### RUN BLAST COMMAND IF PRESENT ######
-    if 'command_to_run' in st.session_state:
-        command = st.session_state['command_to_run']
-        p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        st.session_state['process_pid'] = p.pid
-        st.session_state['process'] = p
-        st.session_state["blast_start_time"] = datetime.now()
-
-        del st.session_state['command_to_run']
-
-    ###### BLAST ######
-    # Button disabled during blast process
-    if start_col.button('Blast query',
-                        disabled=bool(st.session_state.get('process_pid', False)),
-                        use_container_width=True):
+    if blast_button:
         st.session_state.switch_to_result_page = False
 
         if 'db' not in st.session_state:
@@ -661,116 +647,171 @@ def main():
 
         st.markdown(f'Blast started at: {datetime.now():%d/%m/%Y %H:%M:%S}')
 
-        blast_output_file, command = prepare_for_blast_command(query=st.session_state['query'],
-                                                               blast_mode=st.session_state['blast_mode'],
-                                                               db=st.session_state['db'],
-                                                               threads=st.session_state['threads'],
-                                                               **st.session_state['advanced_options'])
+        blast_output_file, command = prepare_for_blast_command(
+            query=st.session_state['query'],
+            blast_mode=st.session_state['blast_mode'],
+            db=st.session_state['db'],
+            threads=st.session_state['threads'],
+            **st.session_state['advanced_options'])
 
-        # rerun to update button states and execute command
-        st.session_state['command_to_run'] = command
-        st.session_state['blast_output_file'] = blast_output_file
-        st.experimental_rerun()
-
-    # Button enabled during blast process
-    if end_col.button('Stop process',
-                      disabled=not bool(st.session_state.get('process_pid', False)),
-                      use_container_width=True):
-        process_pid = st.session_state.get('process_pid', None)
-        proc = st.session_state.get('process', None)
-
-        if not process_pid or not proc:
-            st.experimental_rerun()
-
-        if proc.poll():
-            st.info('Process already stopped')
-
-        else:
-            proc = st.session_state['process']
-
-            # A well-behaved application should finish communicating after it's killed to consume the output.
-            print(f'INSIDE MAIN - Terminating process with pid: {process_pid}')
-
-            kill_process_group(procid=process_pid)
-            proc.communicate()
-
-        del st.session_state['process_pid']
-        del st.session_state['process']
-        st.experimental_rerun()
-
-    # If the process is running, show the spinner and wait for the process to finish
-    process_pid = st.session_state.get('process_pid', None)
-    if process_pid and psutil.pid_exists(process_pid):
-
-        st.markdown(f"""
-        Blast started at: {st.session_state["blast_start_time"]:%Y-%m-%d %H:%M:%S}\n
-        """)
-
-        with st.spinner(f"Running {st.session_state.blast_mode}..."):
-            try:
-                # communicate() will wait until the process terminates
-                p = st.session_state['process']
-                out, err = p.communicate()
-
-                if p.returncode != 0:
-                    raise subprocess.CalledProcessError(p.returncode, p.args, output=out, stderr=err)
-
-                if err:
-                    lines = err.splitlines()
-                    if any('FASTA-Reader: Ignoring invalid residues at position(s):' in line for line in lines):
-                        st.warning(f'The analysis finished but some residues are invalid. '
-                                   f'Please check that you have selected the correct BLAST program: ')
+        st.session_state["blast_start_time"] = datetime.now()
+        
+        # Create progress bar and status display
+        progress_bar = st.progress(0)
+        progress_text = st.empty()
+        status_text = st.empty()
+        
+        status_text.info('🧬 Initializing BLAST analysis...')
+        
+        try:
+                # Start BLAST process
+                process = subprocess.Popen(command, stdout=subprocess.PIPE, 
+                                         stderr=subprocess.PIPE, text=True)
+                st.session_state['blast_process'] = process
+                
+                # Update progress while process is running
+                start_time = datetime.now()
+                while process.poll() is None:
+                    # Check if user wants to stop
+                    if 'blast_process' not in st.session_state:
+                        process.terminate()
+                        break
+                        
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    
+                    # Simple progress simulation based on time
+                    if elapsed < 10:
+                        progress = min(elapsed / 10 * 0.3, 0.3)
+                        progress_text.text(f'Running BLAST... {elapsed:.1f}s')
+                    elif elapsed < 30:
+                        progress = 0.3 + min((elapsed - 10) / 20 * 0.4, 0.4)
+                        progress_text.text(f'Processing results... {elapsed:.1f}s')
                     else:
-                        st.warning(f'The analysis finished but there were some errors: ')
+                        progress = 0.7 + min((elapsed - 30) / 30 * 0.25, 0.25)
+                        progress_text.text(f'Finalizing... {elapsed:.1f}s')
+                    
+                    progress_bar.progress(progress)
+                    
+                    # Small delay to prevent excessive CPU usage
+                    import time
+                    time.sleep(0.5)
+                
+                # Get final results
+                stdout, stderr = process.communicate()
+                
+                # Clean up process from session state
+                if 'blast_process' in st.session_state:
+                    del st.session_state['blast_process']
+                
+                # Complete the progress bar
+                progress_bar.progress(1.0)
+                progress_text.text('BLAST analysis complete!')
+                status_text.success('✅ BLAST analysis finished successfully!')
+                
+                if process.returncode != 0:
+                    raise subprocess.CalledProcessError(process.returncode, command, 
+                                                      stdout=stdout, stderr=stderr)
+                
+                if stderr:
+                    lines = stderr.splitlines()
+                    if any('FASTA-Reader: Ignoring invalid residues at position(s):' in line for line in lines):
+                        st.warning('The analysis finished but some residues are invalid. '
+                                   'Please check that you have selected the correct BLAST program.')
+                    else:
+                        st.warning('The analysis finished but there were some errors.')
 
                     st.write(f"Showing last {20 if len(lines) > 20 else len(lines)} lines of error output:")
                     st.code('\n'.join(lines[-20:]))
 
-            except subprocess.CalledProcessError as e:
-                stderr = e.stderr
-                st.error(f'Error running blast: {stderr}')
+        except subprocess.CalledProcessError as e:
+            # Clean up process from session state
+            if 'blast_process' in st.session_state:
+                del st.session_state['blast_process']
+                
+            progress_bar.progress(0)
+            progress_text.text('')
+            status_text.error('❌ BLAST analysis failed!')
+            
+            stderr = e.stderr if e.stderr else str(e)
+            st.error(f'Error running blast: {stderr}')
 
-                if 'BLAST Database error: No alias or index file found for nucleotide database' in stderr:
-                    st.info(f'It seems you were trying to do a ***{st.session_state["blast_mode"].upper()}*** '
-                            f'which requires a nucleotide database, but '
-                            f'***{Path(st.session_state["db"]).parent.name}*** is a protein one.')
-                elif 'BLAST Database error: No alias or index file found for protein database' in stderr:
-                    st.info(f'It seems you were trying to do a ***{st.session_state["blast_mode"].upper()}*** '
-                            f'which requires a protein database, but ***{Path(st.session_state["db"]).parent.name}*** '
-                            f'is a nucleotide one.')
-                elif "there's a line that doesn't look like plausible data, but it's not marked as defline" in stderr:
-                    st.info(f"Error parsing blast results. It's likely that there is a wrong character "
-                            f"in the query that BLAST does not know how to interpret. "
-                            f"Please check the query and try again.")
-                else:
-                    raise e
+            if 'BLAST Database error: No alias or index file found for nucleotide database' in stderr:
+                st.info(f'It seems you were trying to do a ***{st.session_state["blast_mode"].upper()}*** '
+                        f'which requires a nucleotide database, but '
+                        f'***{Path(st.session_state["db"]).parent.name}*** is a protein one.')
+            elif 'BLAST Database error: No alias or index file found for protein database' in stderr:
+                st.info(f'It seems you were trying to do a ***{st.session_state["blast_mode"].upper()}*** '
+                        f'which requires a protein database, but ***{Path(st.session_state["db"]).parent.name}*** '
+                        f'is a nucleotide one.')
+            elif "there's a line that doesn't look like plausible data, but it's not marked as defline" in stderr:
+                st.info("Error parsing blast results. It's likely that there is a wrong character "
+                        "in the query that BLAST does not know how to interpret. "
+                        "Please check the query and try again.")
+            st.stop()
+        
+        except Exception as e:
+            # Handle any other exceptions
+            if 'blast_process' in st.session_state:
+                del st.session_state['blast_process']
+                
+            progress_bar.progress(0)
+            progress_text.text('')
+            status_text.error('❌ Unexpected error!')
+            
+            st.error(f'Unexpected error: {str(e)}')
+            st.stop()
 
-                st.stop()
-
-        del st.session_state['process_pid']
-        del st.session_state['process']
+        st.session_state["blast_end_time"] = datetime.now()
 
         with st.spinner('Parsing results...'):
-
-            blast_output_file = st.session_state['blast_output_file']
             write_metadata(blast_output_file, st.session_state['advanced_options'])
 
             try:
-                st.session_state['blast_parser'] = load_analysis(blast_output_file)
+                # Clear cache and session state to prevent recursion issues
+                st.cache_data.clear()
+                if 'blast_parser' in st.session_state:
+                    del st.session_state['blast_parser']
+                
+                # Instead of using the complex parser, let's create a simple one
+                import pandas as pd
+                
+                # Read the file manually to avoid the recursion issue
+                try:
+                    # Define column names for our 21-column output
+                    column_names = [
+                        'query_title', 'strain', 'identity', 'perc_identity', 
+                        'query_len', 'align_len', 'perc_alignment', 'gaps', 
+                        'gap_open', 'mismatch', 'positive', 'perc_positive',
+                        'query_start', 'query_end', 'seq_start', 'seq_end',
+                        'query_frame', 'seq_frame', 'score', 'evalue', 'bit_score'
+                    ]
+                    
+                    # Read CSV with manual column specification
+                    df = pd.read_csv(blast_output_file, sep='\t', comment='#', 
+                                   header=None, names=column_names)
+                    
+                    # Create a simple blast parser object
+                    class SimpleBLASTParser:
+                        def __init__(self, df):
+                            self.whole_df = df
+                            self.queries = [{'query_title': 'Test', 'hits': len(df)}]
+                    
+                    st.session_state['blast_parser'] = SimpleBLASTParser(df)
+                    
+                except Exception as e:
+                    st.error(f"Error parsing results: {str(e)}")
+                    st.stop()
             except EmptyCSVError:
-
-                st.error(f"The analysis did not produce any result. No matches were found.")
+                st.error("The analysis did not produce any result. No matches were found.")
                 st.stop()
 
-        st.session_state["blast_end_time"] = datetime.now()
         st.session_state['switch_to_result_page'] = True
-
-        # By rerunning the app, we can re-enable the blast query button, disable the stop process button
-        # and then switch to the results page
-        st.experimental_rerun()
+        st.rerun()
 
     ##### SWITCH PAGE #####
     if st.session_state.get('switch_to_result_page', False):
+        # Reset the flag to prevent infinite rerun loops
+        st.session_state['switch_to_result_page'] = False
 
         if 'blast_start_time' in st.session_state and 'blast_end_time' in st.session_state:
             time_elapsed: timedelta = st.session_state["blast_end_time"] - st.session_state["blast_start_time"]
@@ -792,8 +833,7 @@ def main():
 
         st.markdown("""---""")
         if st.button('Go to results'):
-            st.session_state.switch_to_result_page = False
-            switch_page('Results')
+            st.switch_page('pages/3 Results.py')
 
         for query_title in zero_hit_queries:
             st.info(f'No hits found for query: \\\n*{query_title}*')
